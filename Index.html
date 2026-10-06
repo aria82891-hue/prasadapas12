@@ -123,7 +123,7 @@ button,input{font:inherit}
       <b>Aturan ujian</b>
       <p class="small">Pilih tingkat SKU sesuai arahan pembina. Rakit tetap menggunakan bank dan alur ujian Rakit yang sudah ada.</p>
       <p class="small">Untuk Terap, paket soal dibangun dari bank soal SKU yang tersedia. Setiap nomor mempunyai PIN sendiri.</p>
-      <p class="small">Jawaban otomatis tersimpan di perangkat sehingga dapat dilanjutkan jika halaman direfresh/ditutup.</p>
+      <p class="small">Saat mengerjakan SKU, peserta tidak dapat kembali ke halaman utama sebelum mengumpulkan jawaban. Jika berpindah tab, menutup, atau memuat ulang halaman, SKU yang sedang dikerjakan akan diulang dari awal.</p>
     </div>
   </div>
   <br>
@@ -159,11 +159,12 @@ button,input{font:inherit}
   <div class="exam-top">
     <div class="exam-top-row">
       <div><b id="examTitle">Ujian SKU</b><div class="small" id="examMeta">20 soal</div></div>
-      <button class="btn ghost" onclick="leaveExam()">Simpan & Kembali</button>
+      <span class="pill">Selesaikan SKU dahulu</span>
     </div>
     <div class="progress"><div id="progressBar"></div></div>
     <div class="small" id="progressText">0/20 terjawab</div>
   </div>
+  <div id="examWarning" class="note hidden" role="alert" style="margin-bottom:15px">jangan kayak gitu lagi yaa</div>
   <div id="questionList"></div>
   <div class="bottom-bar">
     <span class="small" id="saveStatus">Jawaban tersimpan otomatis.</span>
@@ -213,6 +214,7 @@ let state = JSON.parse(localStorage.getItem(STORAGE) || "null") || {
 if(!state.terapResults) state.terapResults = {};
 if(!state.terapDrafts) state.terapDrafts = {};
 if(!state.profile?.level) state.profile && (state.profile.level="rakit");
+let examInterrupted = false;
 
 function getLevel(){ return state.profile?.level === "terap" ? "terap" : "rakit"; }
 function getBank(){ return getLevel()==="terap" ? TERAP_BANK : BANK; }
@@ -233,6 +235,7 @@ async function sha256(s) {
 }
 
 function login() {
+  if(state.active) return;
   const name = document.getElementById("nameInput").value.trim();
   const cls = document.getElementById("classInput").value.trim();
   if(!name || !cls) { alert("Nama dan kelas wajib diisi."); return; }
@@ -244,11 +247,13 @@ function login() {
 }
 
 function show(id) {
+  if(state.active && id !== "examPage") return;
   ["loginPage","dashboardPage","examPage","resultPage"].forEach(x=>document.getElementById(x).classList.add("hidden"));
   document.getElementById(id).classList.remove("hidden");
 }
 
 function showDashboard() {
+  if(state.active) return;
   if(!state.profile) { show("loginPage"); return; }
   document.getElementById("profileName").textContent = state.profile.name;
   document.getElementById("profileClass").textContent = state.profile.cls;
@@ -286,6 +291,7 @@ function renderSku() {
 }
 
 async function openSku(no) {
+  if(state.active) return;
   const results = getResults(), bank = getBank();
   if(results[no] && results[no].score >= 80) {
     showResult(no, results[no]);
@@ -302,12 +308,16 @@ async function openSku(no) {
 }
 
 function startExam(no) {
+  if(state.active) return;
   state.active = no;
+  examInterrupted = false;
+  document.getElementById("examWarning").classList.add("hidden");
   const drafts = getDrafts();
   if(!drafts[no]) drafts[no] = {answers:Array(20).fill(null), startedAt:Date.now()};
   saveState();
   renderExam();
   show("examPage");
+  history.pushState({skuExam:true}, "", location.href);
 }
 
 function renderExam() {
@@ -348,19 +358,23 @@ function updateProgress() {
   document.getElementById("saveStatus").textContent = "✓ Jawaban tersimpan otomatis di perangkat.";
 }
 
-function leaveExam() {
+function restartInterruptedExam() {
+  if(!state.active || examInterrupted) return;
+  getDrafts()[state.active] = {answers:Array(20).fill(null), startedAt:Date.now()};
+  examInterrupted = true;
   saveState();
-  state.active = null;
-  saveState();
-  showDashboard();
+  renderExam();
+  window.scrollTo(0, 0);
 }
 
 function submitExam() {
+  if(!state.active) return;
   const no = state.active, d = getDrafts()[no];
   const unanswered = d.answers.filter(x=>!x).length;
   if(unanswered) {
     if(!confirm("Masih ada "+unanswered+" soal yang belum dijawab. Tetap kumpulkan?")) return;
   }
+  if(document.hidden || state.active !== no || getDrafts()[no] !== d) return;
   const b = getBank()[no];
   let correct = 0;
   b.answers.forEach((key,i)=>{ if(d.answers[i] === key) correct++; });
@@ -369,6 +383,7 @@ function submitExam() {
   getResults()[no] = result;
   delete getDrafts()[no];
   state.active = null;
+  examInterrupted = false;
   saveState();
   showResult(no,result);
 }
@@ -406,13 +421,13 @@ function retryExam() {
     if(no) {
       delete getResults()[no];
       getDrafts()[no] = {answers:Array(20).fill(null),startedAt:Date.now()};
-      state.active=no; saveState(); renderExam(); show("examPage");
+      startExam(no);
     }
   }
 }
 
 function logout() {
-  if(state.active) { alert("Ujian sedang tersimpan. Kembali ke dashboard terlebih dahulu."); return; }
+  if(state.active) { alert("Selesaikan dan kumpulkan jawaban SKU sebelum keluar."); return; }
   show("loginPage");
 }
 
@@ -442,8 +457,40 @@ function downloadCertificate() {
 }
 
 function restore() {
+  if(state.profile && state.active && getBank()[state.active]) {
+    restartInterruptedExam();
+    show("examPage");
+    history.pushState({skuExam:true}, "", location.href);
+    if(!document.hidden) {
+      document.getElementById("examWarning").classList.remove("hidden");
+      examInterrupted = false;
+    }
+    return;
+  }
+  state.active = null;
   if(state.profile) showDashboard(); else show("loginPage");
 }
+document.addEventListener("visibilitychange", () => {
+  if(!state.active) return;
+  if(document.hidden) {
+    restartInterruptedExam();
+  } else if(examInterrupted) {
+    document.getElementById("examWarning").classList.remove("hidden");
+    examInterrupted = false;
+  }
+});
+window.addEventListener("pagehide", restartInterruptedExam);
+window.addEventListener("pageshow", () => {
+  if(state.active && examInterrupted && !document.hidden) {
+    document.getElementById("examWarning").classList.remove("hidden");
+    examInterrupted = false;
+  }
+});
+window.addEventListener("popstate", () => {
+  if(!state.active) return;
+  history.pushState({skuExam:true}, "", location.href);
+  show("examPage");
+});
 restore();
 </script>
 </div>
